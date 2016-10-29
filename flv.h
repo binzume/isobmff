@@ -44,6 +44,22 @@ static inline uint8_t read8(std::istream &is) {
     is.read((char*)&buf[0],sizeof(buf));
     return buf[0];
 }
+static inline void write8(std::ostream &is, uint8_t d) {
+    char buf[] = {d};
+    is.write(buf, 1);
+}
+static inline void write24(std::ostream &is, uint32_t d) {
+    char buf[] = {d >> 16, d >> 8, d};
+    is.write(buf, 3);
+}
+static inline void write32(std::ostream &is, uint32_t d) {
+    char buf[] = {d >> 24, d >> 16, d >> 8, d};
+    is.write(buf, 4);
+}
+static inline void write64(std::ostream &os, uint64_t d) {
+    write32(os, d >> 32);
+    write32(os, d);
+}
 
 inline static void parse(FLVHeader &h, std::istream &is) {
     is.read(h.signature, 3);
@@ -65,6 +81,23 @@ inline static int skip_data(FLVTagHeader &th, std::istream &is) {
     return th.size;
 }
 
+
+static inline std::ostream& operator<<(std::ostream &os, const FLVHeader& fh) {
+    os.write(fh.signature, 3);
+    write8(os, fh.version);
+    write8(os, fh.type_flags);
+    write32(os, fh.data_offset);
+    return os;
+}
+
+static inline std::ostream& operator<<(std::ostream &os, const FLVTagHeader& th) {
+    write8(os, th.type);
+    write24(os, th.size);
+    write24(os, th.timestamp);
+    write8(os, th.timestamp >> 24);
+    write24(os, th.stream_id);
+    return os;
+}
 
 } // namespace flv
 

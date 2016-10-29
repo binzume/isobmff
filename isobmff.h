@@ -121,6 +121,49 @@ public:
     }
 };
 
+
+
+class FullBufBox : public FullBox{
+protected:
+    std::vector<uint8_t> buf;
+    uint8_t ui8(int pos) const {
+        return buf[pos];
+    }
+    uint32_t ui32(int pos) const {
+        return (buf[pos] << 24)|(buf[pos+1] << 16)|(buf[pos+2] << 8)|buf[pos+3];
+    }
+    uint16_t ui16(int pos) const {
+        return (buf[pos] << 8)|buf[pos+1];
+    }
+    uint64_t ui64(int pos) const {
+        uint64_t h = ui32(pos);
+        return h | ui32(pos+4);
+    }
+public:
+    FullBufBox(const char type[4], size_t sz) : FullBox(type, sz) {
+        buf.resize(sz - 12);
+    }
+
+    virtual void dump_attr(std::ostream &os, const std::string &prefix) const {
+        os << prefix << " : [";
+        for (int i=0; i<10 && i < buf.size(); i++) {
+            os << (uint32_t)buf[i] << ",";
+        }
+        os << "...] " << buf.size() << std::endl;
+    }
+
+    void parse(std::istream &is) {
+        FullBox::parse(is);
+        is.read((char*)&buf[0], size - 12);
+    }
+    virtual void write(std::ostream &os) const {
+        FullBox::write(os);
+        if (size > 8) {
+            os.write((char*)&buf[0], size - 12);
+        }
+    }
+};
+
 class UnknownBox : public Box {
 public:
     std::vector<uint8_t> body;
@@ -173,14 +216,17 @@ static const char *BOX_MOOV = "moov";
 static const char *BOX_MOOF = "moof";
 static const char *BOX_MVHD = "mvhd";
 static const char *BOX_MDIA = "mdia";
-static const char *BOX_MDAT = "mdat";
+static const char *BOX_MDHD = "mdhd";
 static const char *BOX_MINF = "minf";
+static const char *BOX_MDAT = "mdat";
 static const char *BOX_STCO = "stco";
 static const char *BOX_STSC = "stsc";
 static const char *BOX_STSD = "stsd";
+static const char *BOX_STTS = "stts";
 static const char *BOX_STSZ = "stsz";
 static const char *BOX_STSS = "stss";
 static const char *BOX_STBL = "stbl";
+static const char *BOX_CTTS = "ctts";
 static const char *BOX_TRAK = "trak";
 static const char *BOX_TKHD = "tkhd";
 static const char *BOX_DTS  = "dts\0";
@@ -236,7 +282,7 @@ public:
     std::vector<uint8_t> body;
 
     virtual void dump_attr(std::ostream &os, const std::string &prefix) const {
-        os << prefix << " free: [";
+        os << prefix << " body: [";
         for (int i=0; i<10 && i < body.size(); i++) {
             os << (uint32_t)body[i] << ",";
         }
@@ -301,6 +347,304 @@ public:
     }
 };
 
+class BoxMDHD : public FullBufBox{
+public:
+    BoxMDHD(size_t sz) : FullBufBox(BOX_MDHD, sz) {}
+
+    uint64_t created() const {
+        if (version == 0) {
+            return ui32(0);
+        } else {
+            return ui64(0);
+        }
+    }
+    uint64_t modified() const {
+        if (version == 0) {
+            return ui32(4);
+        } else {
+            return ui64(8);
+        }
+    }
+    uint32_t timeScale() const {
+        if (version == 0) {
+            return ui32(4*2);
+        } else {
+            return ui32(8*2);
+        }
+    }
+    uint64_t duration() const {
+        if (version == 0) {
+            return ui32(4*2 + 4);
+        } else {
+            return ui64(8*2 + 4);
+        }
+    }
+
+    virtual void dump_attr(std::ostream &os, const std::string &prefix) const {
+        os << prefix << " timeScale: " << timeScale() << std::endl;
+        os << prefix << " duration: " << duration() << std::endl;
+    }
+};
+
+class BoxTKHD : public FullBufBox{
+public:
+    BoxTKHD(size_t sz) : FullBufBox(BOX_TKHD, sz) {}
+
+    uint64_t created() const {
+        if (version == 0) {
+            return ui32(0);
+        } else {
+            return ui64(0);
+        }
+    }
+    uint64_t modified() const {
+        if (version == 0) {
+            return ui32(4);
+        } else {
+            return ui64(8);
+        }
+    }
+    uint32_t trackId() const {
+        if (version == 0) {
+            return ui32(4*2);
+        } else {
+            return ui32(8*2);
+        }
+    }
+    // ui32 reserved.
+    uint64_t duration() const {
+        if (version == 0) {
+            return ui32(4*2 + 4*2);
+        } else {
+            return ui64(8*2 + 4*2);
+        }
+    }
+    // ui32[2] si16[2]
+
+    uint16_t volume() const {
+        if (version == 0) {
+            return ui16(4*3 + 4*5);
+        } else {
+            return ui16(8*3 + 4*5);
+        }
+    }
+    int32_t matrix(int n) const {
+        if (version == 0) {
+            return ui32(4*3 + 4*6 + n);
+        } else {
+            return ui32(8*3 + 4*6 + n);
+        }
+    }
+    uint32_t width() const {
+        if (version == 0) {
+            return ui32(4*3 + 4*15);
+        } else {
+            return ui32(8*3 + 4*15);
+        }
+    }
+    uint32_t height() const {
+        if (version == 0) {
+            return ui32(4*3 + 4*16);
+        } else {
+            return ui32(8*3 + 4*16);
+        }
+    }
+
+    virtual void dump_attr(std::ostream &os, const std::string &prefix) const {
+        os << prefix << " track: " << trackId() << std::endl;
+        os << prefix << " duration: " << duration() << std::endl;
+        os << prefix << " volume: " << volume() << std::endl;
+        os << prefix << " width: " << width()/65536 << std::endl;
+        os << prefix << " height: " << height()/65536 << std::endl;
+        os << prefix << " mat:[";
+        for (int i=0;i<9;i++) os << matrix(i) << ",";
+        os << "]" << std::endl;
+    }
+};
+
+class BoxSTSD : public FullBufBox{
+public:
+    BoxSTSD(size_t sz) : FullBufBox(BOX_STSD, sz) {}
+
+    uint32_t count() const {return ui32(0);}
+    uint32_t type() const {return ui32(8);}
+    std::string typeAsString() const {
+        return std::string((char*)&buf[8],4);
+    }
+    std::string desc() const {
+        return std::string((char*)&buf[12],ui32(4) - 8);
+    }
+
+    virtual void dump_attr(std::ostream &os, const std::string &prefix) const {
+        uint32_t c = count();
+        os << prefix << " count: " << c << std::endl;
+        int pos = 4;
+        for (int i=0; i<c && i<10;i++) {
+            int len = ui32(pos);
+            os << prefix << " desc len:" << len <<  std::endl;
+            os << prefix << "  type: " << ui32(pos+4) << "(" << typeAsString() << std::endl;
+            pos += len;
+        }
+    }
+};
+
+class BoxSTSC : public FullBufBox{
+public:
+    BoxSTSC(size_t sz) : FullBufBox(BOX_STSC, sz) {}
+
+    uint32_t count() const {return ui32(0);}
+    uint32_t first(int n) const {return ui32(4 + n * 12);}
+    uint32_t spc(int n) const {return ui32(4 + n * 12 + 4);}
+    uint32_t sampleToChunk(int n) const {
+        // n: [0..(numSample-1)]
+        uint32_t c = count();
+        uint32_t ofs = 0;
+        uint32_t ch = 1;
+        uint32_t lch = 1;
+        uint32_t lspc = 1;
+        for (uint32_t i = 0; i<c; i++) {
+            ofs += (first(i) - lch) * lspc;
+            if (n < ofs) break;
+            ch = first(i) + (n - ofs) / spc(i);
+            lspc = spc(i);
+            lch = first(i);
+        }
+        return ch - 1;
+    }
+
+    virtual void dump_attr(std::ostream &os, const std::string &prefix) const {
+        uint32_t c = count();
+        os << prefix << " count: " << c << std::endl;
+        int pos = 4;
+        for (int i=0; i<c && i<10;i++) {
+            os << prefix << " stsc first_chunk:" << ui32(pos) <<  std::endl;
+            os << prefix << "     spc:" << ui32(pos+4) <<  std::endl;
+            os << prefix << "     descidx:" << ui32(pos+8) <<  std::endl;
+            pos += 12;
+        }
+    }
+};
+
+class BoxSTTS : public FullBufBox{
+public:
+    BoxSTTS(size_t sz) : FullBufBox(BOX_STTS, sz) {}
+
+    uint32_t count() const {return ui32(0);}
+
+    uint32_t count(uint32_t n) const {return ui32(4 + n*8);}
+    uint32_t delta(uint32_t n) const {return ui32(4 + n*8 + 4);}
+
+    uint64_t sampleToTime(uint32_t n) const {
+        uint32_t c = count();
+        uint64_t t = 0;
+        uint64_t tc = 0;
+        for (uint32_t i = 0; i<c; i++) {
+            if (n < count(i)) {
+                return t + n * delta(i);
+            }
+            n -= count(i);
+            t += count(i) * delta(i);
+        }
+        return t;
+    }
+
+    virtual void dump_attr(std::ostream &os, const std::string &prefix) const {
+        uint32_t c = count();
+        os << prefix << " count: " << c << std::endl;
+        int pos = 4;
+        for (int i=0; i<c && i<10;i++) {
+            os << prefix << " stts count:" << ui32(pos) <<  std::endl;
+            os << prefix << "      delta:" << ui32(pos+4) <<  std::endl;
+            pos += 8;
+        }
+    }
+};
+
+class BoxCTTS : public FullBufBox{
+public:
+    BoxCTTS(size_t sz) : FullBufBox(BOX_CTTS, sz) {}
+
+    uint32_t count() const {return ui32(0);}
+
+    uint32_t count(uint32_t n) const {return ui32(4 + 8*n);}
+    uint32_t offset(uint32_t n) const {return ui32(4 + 8*n + 4);}
+    uint32_t sampleToOffset(int n) const {
+        // n: [0..(numSample-1)]
+        uint32_t c = count();
+        uint32_t ofs = 0;
+        uint32_t s = 0;
+        for (uint32_t i = 0; i<c; i++) {
+            ofs = offset(i);
+            s += count(i);
+            if (n < s) break;
+        }
+        return ofs;
+    }
+
+    virtual void dump_attr(std::ostream &os, const std::string &prefix) const {
+        uint32_t c = count();
+        os << prefix << " count: " << c << std::endl;
+        int pos = 4;
+        for (int i=0; i<c && i<10;i++) {
+            os << prefix << " sample count:" << ui32(pos) <<  std::endl;
+            os << prefix << "        offset:" << ui32(pos+4) <<  std::endl;
+            pos += 8;
+        }
+    }
+};
+
+class BoxSTCO : public FullBufBox{
+public:
+    BoxSTCO(size_t sz) : FullBufBox(BOX_STCO, sz) {}
+
+    uint32_t count() const {return ui32(0);}
+    uint32_t offset(int pos) const {return ui32(4+pos*4);}
+
+    virtual void dump_attr(std::ostream &os, const std::string &prefix) const {
+        uint32_t c = count();
+        os << prefix << " count: " << c << std::endl;
+        for (int i=0; i<c && i<10;i++) {
+            os << prefix << "  offset:" << offset(i) <<  std::endl;
+        }
+    }
+};
+
+class BoxSTSS : public FullBufBox{
+public:
+    BoxSTSS(size_t sz) : FullBufBox(BOX_STSS, sz) {}
+
+    uint32_t count() const {return ui32(0);}
+    uint32_t sync(int pos) const {return ui32(4+pos*4);}
+
+    virtual void dump_attr(std::ostream &os, const std::string &prefix) const {
+        uint32_t c = count();
+        os << prefix << " count: " << c << std::endl;
+        for (int i=0; i<c && i<10;i++) {
+            os << prefix << "  sync:" << sync(i) <<  std::endl;
+        }
+    }
+};
+
+class BoxSTSZ : public FullBufBox{
+public:
+    BoxSTSZ(size_t sz) : FullBufBox(BOX_STSZ, sz) {}
+
+    uint32_t constantSize() const {return ui32(0);}
+    uint32_t count() const {return ui32(4);}
+    uint32_t size(int pos) const {return ui32(8+pos*4);}
+
+    virtual void dump_attr(std::ostream &os, const std::string &prefix) const {
+        uint32_t c = count();
+        os << prefix << " count: " << c << std::endl;
+        os << prefix << " constant: " << constantSize() << std::endl;
+        if (constantSize() == 0) {
+            for (int i=0; i<c && i<10;i++) {
+                os << prefix << "  size:" << size(i) <<  std::endl;
+            }
+        }
+    }
+};
+
 class BoxSimpleList : public Box {
 public:
     BoxSimpleList(const char boxtype[4], size_t sz) : Box(boxtype, sz) {
@@ -312,12 +656,62 @@ public:
 
     Box* createBox(const char boxtype[4], const size_t sz, std::istream &is) {
         if (chktype(boxtype, BOX_FTYP)) {
-            BoxFTYP *b = new BoxFTYP(sz);
+            auto *b = new BoxFTYP(sz);
+            b->parse(is);
+            return b;
+        }
+        if (chktype(boxtype, BOX_FREE)) {
+            auto *b = new BoxFREE(sz);
             b->parse(is);
             return b;
         }
         if (chktype(boxtype, BOX_MVHD)) {
-            BoxMVHD *b = new BoxMVHD(sz);
+            auto *b = new BoxMVHD(sz);
+            b->parse(is);
+            return b;
+        }
+        if (chktype(boxtype, BOX_MDHD)) {
+            auto *b = new BoxMDHD(sz);
+            b->parse(is);
+            return b;
+        }
+        if (chktype(boxtype, BOX_TKHD)) {
+            auto *b = new BoxTKHD(sz);
+            b->parse(is);
+            return b;
+        }
+        if (chktype(boxtype, BOX_STSC)) {
+            auto *b = new BoxSTSC(sz);
+            b->parse(is);
+            return b;
+        }
+        if (chktype(boxtype, BOX_STSD)) {
+            auto *b = new BoxSTSD(sz);
+            b->parse(is);
+            return b;
+        }
+        if (chktype(boxtype, BOX_STSS)) {
+            auto *b = new BoxSTSS(sz);
+            b->parse(is);
+            return b;
+        }
+        if (chktype(boxtype, BOX_STSZ)) {
+            auto *b = new BoxSTSZ(sz);
+            b->parse(is);
+            return b;
+        }
+        if (chktype(boxtype, BOX_STCO)) {
+            auto *b = new BoxSTCO(sz);
+            b->parse(is);
+            return b;
+        }
+        if (chktype(boxtype, BOX_STTS)) {
+            BoxSTTS *b = new BoxSTTS(sz);
+            b->parse(is);
+            return b;
+        }
+        if (chktype(boxtype, BOX_CTTS)) {
+            BoxCTTS *b = new BoxCTTS(sz);
             b->parse(is);
             return b;
         }
@@ -352,6 +746,9 @@ public:
     }
 
 };
+
+
+
 
 class Mp4Root : public BoxSimpleList {
 public:
