@@ -1,12 +1,12 @@
 ISO base media file format (isobmff)
 
-C++ header only.
+C++ header-only library.
 
 # Usage
 
 Include isobmff.h.
 
-```c
+```c++
 #include "isobmff.h"
 using namespace isobmff;
 ```
@@ -15,7 +15,7 @@ See: isobmff_test.cpp
 
 
 
-```c
+```c++
 
 mp4.parse(ifs)
 
@@ -31,7 +31,7 @@ ofs << mp4;
 
 - isobmff_tests.cpp dump mp4 box tree.
 - flv_tests.cpp  dump flv tags.
-- mp4toflv.cpp  mp4 to flv converter(only video track)
+- mp4toflv.cpp  mp4 to flv converter(AVC/AAC only)
 
 # License
 

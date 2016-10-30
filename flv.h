@@ -3,6 +3,7 @@
 
 #include <istream>
 #include <ostream>
+#include <vector>
 #include <stdint.h>
 
 namespace flv {
@@ -25,6 +26,11 @@ const static uint8_t ACODEC_NELLYMOSER_8K = 6;
 const static uint8_t ACODEC_AAC = 10;
 const static uint8_t ACODEC_SPEEX = 11;
 const static uint8_t ACODEC_MP3_8K = 14;
+
+const static uint8_t SOUND_RATE_5K = 0;
+const static uint8_t SOUND_RATE_11K = 1;
+const static uint8_t SOUND_RATE_22K = 2;
+const static uint8_t SOUND_RATE_44K = 3;
 
 struct FLVHeader {
     char signature[3];
@@ -93,6 +99,29 @@ inline static void parse(FLVTagHeader &th, std::istream &is) {
 inline static int skip_data(FLVTagHeader &th, std::istream &is) {
     is.seekg(th.size,  std::ios_base::cur); // skip
     return th.size;
+}
+
+template <typename T>
+inline static void write_video_data(std::ostream &os,const T &buf, uint8_t codec, int timeOffset, bool key, bool header = false) {
+    write8(os, (key? 0x10 : 0x20) | codec);
+    if (codec == VCODEC_AVC) {
+        write8(os, header? 0x00 : 0x01);
+        write24(os, timeOffset);
+    }
+    os.write((char*)&buf[0], buf.size());
+}
+
+inline static uint8_t audio_format(uint8_t codec, uint8_t channels, uint8_t sound_rate) {
+    return (codec << 4) | (sound_rate << 2) | (1 << 1) | (channels==2?1:0); // TODO: sample size.
+}
+
+template <typename T>
+inline static void write_audio_data(std::ostream &os,const T &buf, uint8_t aformat, bool header = false) {
+    write8(os, aformat);
+    if ((aformat>>4) == ACODEC_AAC) {
+        write8(os, header? 0x00 : 0x01);
+    }
+    os.write((char*)&buf[0], buf.size());
 }
 
 static inline std::ostream& operator<<(std::ostream &os, const FLVHeader& fh) {

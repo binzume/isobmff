@@ -8,19 +8,22 @@ using namespace isobmff;
 
 int main() {
 
-    ifstream ifs("test.mp4", ios::binary);
+    ifstream ifs("test.mp4", ios::binary); // AVC+AAC mp4
 
     Mp4Root mp4;
     mp4.parse(ifs);
     cout << mp4;
 
+    // get tracks
+    vector<Box*> tracks;
+    mp4.findAllByType(tracks, BOX_TRAK);
+
     // first track.  maybe video.
-    auto track = mp4.findByType(BOX_TRAK);
+    auto track = tracks[0];
 
     auto tkhd = (BoxTKHD*)track->findByType(BOX_TKHD);
-    cout << "resoluion: " << tkhd->width()/65536 << "x" <<  tkhd->width()/65536 << endl;
-
     auto mdhd = (BoxMDHD*)track->findByType(BOX_MDHD);
+    cout << "resoluion: " << tkhd->width()/65536 << "x" <<  tkhd->width()/65536 << endl;
     cout << "duration: " << mdhd->duration() / mdhd->timeScale() << "sec. (" << mdhd->duration() << "/" <<  mdhd->timeScale() << endl;
 
     auto stsc = (BoxSTSC*)track->findByType(BOX_STSC);
@@ -33,7 +36,10 @@ int main() {
     cout << "type: " << stsd->typeAsString() << "  config_size:" << stsd->desc().size() << endl;
     uint32_t lastChunk = -1;
     uint32_t offset = 0;
-    uint8_t codecId = flv::VCODEC_AVC; // TODO
+    uint8_t codecId = flv::VCODEC_AVC;
+    if (stsd->typeAsString() == "mp4a") {
+        codecId = flv::ACODEC_AAC; // TODO
+    }
 
     ofstream of("out.flv", ios::binary);
     size_t prev = 0;
@@ -47,17 +53,27 @@ int main() {
     th.stream_id = 0;
     th.timestamp = 0;
 
+    // write header
     string desc = stsd->desc();
+    int prefixSize = 1;
     if (codecId == flv::VCODEC_AVC) {
         int p = desc.find("avcC");
         string config = desc.substr(p + 4);
-
-        th.size = config.size() + 5;
+        prefixSize = 2 + 3;
+        th.size = config.size() + prefixSize;
         of << th;
-        write8(of, 0x10 | codecId);
-        write8(of, 0x00); // AVC Header
-        write24(of, 0); // timeoffset
-        of << config;
+        flv::write_video_data(of, config, codecId, 0, true, true);
+
+        write32(of, (uint32_t)of.tellp() - prev);
+        prev = of.tellp();
+    } else if (codecId == flv::ACODEC_AAC) {
+        th.type = flv::TAG_TYPE_AUDIO;
+        string config = desc.substr(desc.length()-5, 2); // TODO esds box.
+        prefixSize = 2;
+        th.size = config.size() + prefixSize;
+        of << th;
+        flv::write_audio_data(of, config, flv::audio_format(codecId, 2, flv::SOUND_RATE_44K), true);
+
         write32(of, (uint32_t)of.tellp() - prev);
         prev = of.tellp();
     }
@@ -102,18 +118,16 @@ int main() {
 
         // write flv tag.
         th.timestamp = stts->sampleToTime(i) * 1000 / mdhd->timeScale();
-        th.size = buf.size() + 2 + 3;
+        th.size = buf.size() + prefixSize;
         of << th;
-        write8(of, (rap? 0x10 : 0x20) | codecId);
-        if (codecId == flv::VCODEC_AVC) {
-            write8(of, 0x01); // AVC NAL
-            write24(of, timeOffset * 1000 / mdhd->timeScale());
+        if (th.type == flv::TAG_TYPE_VIDEO) {
+            flv::write_video_data(of, buf, codecId, timeOffset * 1000 / mdhd->timeScale(), rap);
+        } else {
+            flv::write_audio_data(of, buf, flv::audio_format(codecId, 2, flv::SOUND_RATE_44K));
         }
-        of.write((char*)&buf[0], buf.size());
 
         write32(of, (uint32_t)of.tellp() - prev);
         prev = of.tellp();
     }
-
     return 0;
 }
