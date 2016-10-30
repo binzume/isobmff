@@ -7,10 +7,24 @@
 
 namespace flv {
 
-
 const static uint8_t TAG_TYPE_AUDIO = 8;
 const static uint8_t TAG_TYPE_VIDEO = 9;
 const static uint8_t TAG_TYPE_SCRIPT = 18;
+
+const static uint8_t VCODEC_H263 = 2;
+const static uint8_t VCODEC_VP6 = 4;
+const static uint8_t VCODEC_VP6A = 5;
+const static uint8_t VCODEC_AVC = 7;
+
+const static uint8_t ACODEC_ADPCM = 1;
+const static uint8_t ACODEC_MP3 = 2;
+const static uint8_t ACODEC_PCM = 3;
+const static uint8_t ACODEC_NELLYMOSER = 4;
+const static uint8_t ACODEC_NELLYMOSER_16K = 5;
+const static uint8_t ACODEC_NELLYMOSER_8K = 6;
+const static uint8_t ACODEC_AAC = 10;
+const static uint8_t ACODEC_SPEEX = 11;
+const static uint8_t ACODEC_MP3_8K = 14;
 
 struct FLVHeader {
     char signature[3];
@@ -81,7 +95,6 @@ inline static int skip_data(FLVTagHeader &th, std::istream &is) {
     return th.size;
 }
 
-
 static inline std::ostream& operator<<(std::ostream &os, const FLVHeader& fh) {
     os.write(fh.signature, 3);
     write8(os, fh.version);
@@ -100,6 +113,5 @@ static inline std::ostream& operator<<(std::ostream &os, const FLVTagHeader& th)
 }
 
 } // namespace flv
-
 
 #endif

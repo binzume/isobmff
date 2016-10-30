@@ -13,20 +13,25 @@ using namespace isobmff;
 
 See: isobmff_test.cpp
 
-## TODO
 
 
 ```c
 
-mp4.parse(is)
+mp4.parse(ifs)
 
 BoxMVHD *mvhd = (BoxMVHD*)mp4.findByType(BOX_MVHD);
-if (mvhd != null) {
+if (mvhd != nullptr) {
     cout << mvhd.duration << endl;
 }
 
-os << mp4;
+ofs << mp4;
 ```
+
+## Examples
+
+- isobmff_tests.cpp dump mp4 box tree.
+- flv_tests.cpp  dump flv tags.
+- mp4toflv.cpp  mp4 to flv converter(only video track)
 
 # License
 

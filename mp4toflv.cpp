@@ -8,14 +8,11 @@ using namespace isobmff;
 
 int main() {
 
-    ifstream f("test.mp4", ios::binary);
+    ifstream ifs("test.mp4", ios::binary);
 
     Mp4Root mp4;
-    mp4.parse(f);
+    mp4.parse(ifs);
     cout << mp4;
-
-    cout << *mp4.findByType(BOX_MVHD) << endl;
-
 
     // first track.  maybe video.
     auto track = mp4.findByType(BOX_TRAK);
@@ -36,6 +33,7 @@ int main() {
     cout << "type: " << stsd->typeAsString() << "  config_size:" << stsd->desc().size() << endl;
     uint32_t lastChunk = -1;
     uint32_t offset = 0;
+    uint8_t codecId = flv::VCODEC_AVC; // TODO
 
     ofstream of("out.flv", ios::binary);
     size_t prev = 0;
@@ -44,27 +42,32 @@ int main() {
     of << fh;
     write32(of, 0);
 
-    string desc = stsd->desc();
-    int p = desc.find("avcC");
-    string config = desc.substr(p + 4);
-
     flv::FLVTagHeader th;
     th.type = flv::TAG_TYPE_VIDEO;
     th.stream_id = 0;
     th.timestamp = 0;
-    th.size = config.size() + 5;
-    of << th;
-    write8(of, 0x17); // AVC
-    write8(of, 0x00); // AVC Header
-    write24(of, 0); // timeoffset
-    of << config;
-    write32(of, (uint32_t)of.tellp() - prev);
-    prev = of.tellp();
-    vector<uint8_t> buf;
 
-    f.clear();
+    string desc = stsd->desc();
+    if (codecId == flv::VCODEC_AVC) {
+        int p = desc.find("avcC");
+        string config = desc.substr(p + 4);
+
+        th.size = config.size() + 5;
+        of << th;
+        write8(of, 0x10 | codecId);
+        write8(of, 0x00); // AVC Header
+        write24(of, 0); // timeoffset
+        of << config;
+        write32(of, (uint32_t)of.tellp() - prev);
+        prev = of.tellp();
+    }
+
+    vector<uint8_t> buf;
+    ifs.clear();
     for (int i=0; i<stsz->count(); i++) {
         cout << " " << i << endl;
+
+        // read sample
         auto chunk = stsc->sampleToChunk(i);
         if (lastChunk != chunk) {
             lastChunk = chunk;
@@ -81,34 +84,36 @@ int main() {
         }
 
         buf.resize(stsz->size(i));
-        f.seekg(stco->offset(chunk) + offset);
-        f.read((char*)&buf[0], buf.size());
+        ifs.seekg(stco->offset(chunk) + offset);
+        ifs.read((char*)&buf[0], buf.size());
         uint32_t p = 0;
+        offset += stsz->size(i); // update offset in chunk.
+
+        // check idr
         bool rap = false;
-        while (p+5 < buf.size()) {
-            uint32_t sz = (buf[p] << 24) | (buf[p+1] << 16) | (buf[p+2] << 8) | buf[p+3];
-            cout << "  NAL" << sz << " typ" <<  (buf[p+4]&0x1f) <<  endl;
-            if ((buf[p+4]&0x1f) == 5) rap = true;
-            p+= sz + 4;
+        if (codecId == flv::VCODEC_AVC) {
+            while (p+5 < buf.size()) {
+                uint32_t sz = (buf[p] << 24) | (buf[p+1] << 16) | (buf[p+2] << 8) | buf[p+3];
+                cout << "  NAL" << sz << " typ" <<  (buf[p+4]&0x1f) <<  endl;
+                if ((buf[p+4]&0x1f) == 5) rap = true;
+                p+= sz + 4;
+            }
         }
 
         // write flv tag.
         th.timestamp = stts->sampleToTime(i) * 1000 / mdhd->timeScale();
         th.size = buf.size() + 2 + 3;
         of << th;
-        write8(of, rap? 0x17 : 0x07); // AVC
-        write8(of, 0x01); // AVC NAL
-        write24(of, timeOffset * 1000 / mdhd->timeScale()); // TODO
-
+        write8(of, (rap? 0x10 : 0x20) | codecId);
+        if (codecId == flv::VCODEC_AVC) {
+            write8(of, 0x01); // AVC NAL
+            write24(of, timeOffset * 1000 / mdhd->timeScale());
+        }
         of.write((char*)&buf[0], buf.size());
 
         write32(of, (uint32_t)of.tellp() - prev);
         prev = of.tellp();
-
-        // update file offset.
-        offset += stsz->size(i);
     }
-
 
     return 0;
 }

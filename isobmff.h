@@ -9,8 +9,7 @@
 #include <string>
 #include <stdint.h>
 
-namespace isobmff
-{
+namespace isobmff {
 
 static inline uint32_t read32(std::istream &is) {
     uint8_t buf[4];
@@ -76,6 +75,14 @@ public:
             if (b != nullptr) return b;
         }
         return nullptr;
+    }
+
+    template<typename T>
+    void findAllByType(std::vector<T*> &out, const char n[4]) {
+        if (memcmp(type, n, 4)==0)
+            out.push_back((T*)this);
+        for (int i=0; i<children.size(); i++)
+            children[i]->findAllByType(out, n);
     }
 
     void dump(std::ostream &os, const std::string &prefix) const {
@@ -309,7 +316,7 @@ public:
     uint32_t modified;
     uint32_t rate;
     uint32_t volume;
-    uint32_t timeBase;
+    uint32_t timeScale;
     uint64_t duration;
     std::vector<uint8_t> buf;
 
@@ -317,7 +324,7 @@ public:
         FullBox::dump_attr(os,prefix);
         os << prefix << " created: " << created << std::endl;
         os << prefix << " modified: " << modified << std::endl;
-        os << prefix << " duration: " << duration << "/" << timeBase << std::endl;
+        os << prefix << " duration: " << duration << "/" << timeScale << std::endl;
         os << prefix << " rate: " << rate << std::endl;
         os << prefix << " volume: " << volume << std::endl;
     }
@@ -328,7 +335,7 @@ public:
         if (version != 0) return ; // TODO: error.
         created = read32(is);
         modified = read32(is);
-        timeBase = read32(is);
+        timeScale = read32(is);
         duration = read32(is);
         rate = read32(is);
         volume = read32(is);
@@ -339,7 +346,7 @@ public:
         FullBox::write(os);
         write32(os, created);
         write32(os, modified);
-        write32(os, timeBase);
+        write32(os, timeScale);
         write32(os, duration);
         write32(os, rate);
         write32(os, volume);
@@ -748,8 +755,6 @@ public:
 };
 
 
-
-
 class Mp4Root : public BoxSimpleList {
 public:
     Mp4Root() : BoxSimpleList("ROOT", 0x7fffffff) {} // TODO size
@@ -765,6 +770,6 @@ static inline std::ostream& operator<<(std::ostream &os, const Box& b) {
     return os;
 }
 
-} // isobmff
+} // namespace isobmff
 
 #endif
