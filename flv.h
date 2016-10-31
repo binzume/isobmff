@@ -32,6 +32,12 @@ const static uint8_t SOUND_RATE_11K = 1;
 const static uint8_t SOUND_RATE_22K = 2;
 const static uint8_t SOUND_RATE_44K = 3;
 
+const static uint8_t SOUND_SAMPLE_SIZE_8 = 0;
+const static uint8_t SOUND_SAMPLE_SIZE_16 = 1;
+
+const static uint8_t TYPE_FLAG_VIDEO = 1;
+const static uint8_t TYPE_FLAG_AUDIO = 4;
+
 struct FLVHeader {
     char signature[3];
     uint8_t version;
@@ -102,7 +108,9 @@ inline static int skip_data(FLVTagHeader &th, std::istream &is) {
 }
 
 template <typename T>
-inline static void write_video_data(std::ostream &os,const T &buf, uint8_t codec, int timeOffset, bool key, bool header = false) {
+inline static void write_video(std::ostream &os, FLVTagHeader &th, const T &buf, uint8_t codec, int timeOffset, bool key, bool header = false) {
+    th.size = buf.size() + (codec == VCODEC_AVC? 5 : 1);
+    os << th;
     write8(os, (key? 0x10 : 0x20) | codec);
     if (codec == VCODEC_AVC) {
         write8(os, header? 0x00 : 0x01);
@@ -112,11 +120,14 @@ inline static void write_video_data(std::ostream &os,const T &buf, uint8_t codec
 }
 
 inline static uint8_t audio_format(uint8_t codec, uint8_t channels, uint8_t sound_rate) {
-    return (codec << 4) | (sound_rate << 2) | (1 << 1) | (channels==2?1:0); // TODO: sample size.
+	uint8_t sample_size = SOUND_SAMPLE_SIZE_16; // TODO: sample size.
+    return (codec << 4) | (sound_rate << 2) | (sample_size << 1) | (channels==2?1:0);
 }
 
 template <typename T>
-inline static void write_audio_data(std::ostream &os,const T &buf, uint8_t aformat, bool header = false) {
+inline static void write_audio(std::ostream &os, FLVTagHeader &th, const T &buf, uint8_t aformat, bool header = false) {
+    th.size = buf.size() + ((aformat>>4) == ACODEC_AAC? 2 : 1);
+    os << th;
     write8(os, aformat);
     if ((aformat>>4) == ACODEC_AAC) {
         write8(os, header? 0x00 : 0x01);

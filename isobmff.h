@@ -226,6 +226,7 @@ static const char *BOX_MDIA = "mdia";
 static const char *BOX_MDHD = "mdhd";
 static const char *BOX_MINF = "minf";
 static const char *BOX_MDAT = "mdat";
+static const char *BOX_HDLR = "hdlr";
 static const char *BOX_STCO = "stco";
 static const char *BOX_STSC = "stsc";
 static const char *BOX_STSD = "stsd";
@@ -469,6 +470,25 @@ public:
     }
 };
 
+
+class BoxHDLR : public FullBufBox{
+public:
+    BoxHDLR(size_t sz) : FullBufBox(BOX_HDLR, sz) {}
+
+
+    std::string typeAsString() const {
+        return std::string((char*)&buf[4],4);
+    }
+    std::string name() const {
+        return std::string((char*)&buf[20],buf.size()-20);
+    }
+
+    virtual void dump_attr(std::ostream &os, const std::string &prefix) const {
+        os << prefix << " type: " << typeAsString() << std::endl;
+        os << prefix << " name: " << name() << std::endl;
+    }
+};
+
 class BoxSTSD : public FullBufBox{
 public:
     BoxSTSD(size_t sz) : FullBufBox(BOX_STSD, sz) {}
@@ -684,6 +704,11 @@ public:
         }
         if (chktype(boxtype, BOX_TKHD)) {
             auto *b = new BoxTKHD(sz);
+            b->parse(is);
+            return b;
+        }
+        if (chktype(boxtype, BOX_HDLR)) {
+            auto *b = new BoxHDLR(sz);
             b->parse(is);
             return b;
         }

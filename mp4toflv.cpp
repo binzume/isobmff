@@ -23,8 +23,11 @@ int main() {
 
     auto tkhd = (BoxTKHD*)track->findByType(BOX_TKHD);
     auto mdhd = (BoxMDHD*)track->findByType(BOX_MDHD);
+    auto hdlr = (BoxHDLR*)track->findByType(BOX_HDLR);
     cout << "resoluion: " << tkhd->width()/65536 << "x" <<  tkhd->width()/65536 << endl;
-    cout << "duration: " << mdhd->duration() / mdhd->timeScale() << "sec. (" << mdhd->duration() << "/" <<  mdhd->timeScale() << endl;
+    cout << "duration: " << mdhd->duration() / mdhd->timeScale()
+         << "sec. (" << mdhd->duration() << "/" <<  mdhd->timeScale() << endl;
+    cout << "type:" << hdlr->typeAsString() << " (" << hdlr->name() << ")" << endl;
 
     auto stsc = (BoxSTSC*)track->findByType(BOX_STSC);
     auto stsd = (BoxSTSD*)track->findByType(BOX_STSD);
@@ -36,45 +39,39 @@ int main() {
     cout << "type: " << stsd->typeAsString() << "  config_size:" << stsd->desc().size() << endl;
     uint32_t lastChunk = -1;
     uint32_t offset = 0;
-    uint8_t codecId = flv::VCODEC_AVC;
-    if (stsd->typeAsString() == "mp4a") {
-        codecId = flv::ACODEC_AAC; // TODO
-    }
 
     ofstream of("out.flv", ios::binary);
     size_t prev = 0;
 
-    flv::FLVHeader fh = {{'F','L','V'}, 1, 0x05, 9}; // 9: sizeof(flv::FLVHeader)
+    flv::FLVHeader fh = {{'F','L','V'}, 1, flv::TYPE_FLAG_VIDEO | flv::TYPE_FLAG_AUDIO, 9}; // 9: sizeof(flv::FLVHeader)
     of << fh;
-    write32(of, 0);
+    flv::write32(of, 0);
 
     flv::FLVTagHeader th;
     th.type = flv::TAG_TYPE_VIDEO;
     th.stream_id = 0;
     th.timestamp = 0;
+    uint8_t codecId = flv::VCODEC_AVC;
+    if (stsd->typeAsString() == "mp4a") {
+        th.type = flv::TAG_TYPE_AUDIO;
+        codecId = flv::ACODEC_AAC; // TODO esds box.
+    }
 
     // write header
     string desc = stsd->desc();
-    int prefixSize = 1;
     if (codecId == flv::VCODEC_AVC) {
         int p = desc.find("avcC");
         string config = desc.substr(p + 4);
-        prefixSize = 2 + 3;
-        th.size = config.size() + prefixSize;
-        of << th;
-        flv::write_video_data(of, config, codecId, 0, true, true);
+        flv::write_video(of, th, config, codecId, 0, true, true);
 
-        write32(of, (uint32_t)of.tellp() - prev);
+        flv::write32(of, (uint32_t)of.tellp() - prev);
         prev = of.tellp();
     } else if (codecId == flv::ACODEC_AAC) {
-        th.type = flv::TAG_TYPE_AUDIO;
-        string config = desc.substr(desc.length()-5, 2); // TODO esds box.
-        prefixSize = 2;
-        th.size = config.size() + prefixSize;
-        of << th;
-        flv::write_audio_data(of, config, flv::audio_format(codecId, 2, flv::SOUND_RATE_44K), true);
+        int p = desc.find("esds");
+        string config = desc.substr(p+30, desc[p+29]); // TODO esds box.
+        flv::write_audio(of, th, config, flv::audio_format(codecId, 2, flv::SOUND_RATE_44K), true);
 
-        write32(of, (uint32_t)of.tellp() - prev);
+        flv::write32(of, (uint32_t)of.tellp() - prev);
         prev = of.tellp();
     }
 
@@ -102,12 +99,12 @@ int main() {
         buf.resize(stsz->size(i));
         ifs.seekg(stco->offset(chunk) + offset);
         ifs.read((char*)&buf[0], buf.size());
-        uint32_t p = 0;
         offset += stsz->size(i); // update offset in chunk.
 
         // check idr
         bool rap = false;
         if (codecId == flv::VCODEC_AVC) {
+            uint32_t p = 0;
             while (p+5 < buf.size()) {
                 uint32_t sz = (buf[p] << 24) | (buf[p+1] << 16) | (buf[p+2] << 8) | buf[p+3];
                 cout << "  NAL" << sz << " typ" <<  (buf[p+4]&0x1f) <<  endl;
@@ -118,15 +115,13 @@ int main() {
 
         // write flv tag.
         th.timestamp = stts->sampleToTime(i) * 1000 / mdhd->timeScale();
-        th.size = buf.size() + prefixSize;
-        of << th;
         if (th.type == flv::TAG_TYPE_VIDEO) {
-            flv::write_video_data(of, buf, codecId, timeOffset * 1000 / mdhd->timeScale(), rap);
+            flv::write_video(of, th, buf, codecId, timeOffset * 1000 / mdhd->timeScale(), rap);
         } else {
-            flv::write_audio_data(of, buf, flv::audio_format(codecId, 2, flv::SOUND_RATE_44K));
+            flv::write_audio(of, th, buf, flv::audio_format(codecId, 2, flv::SOUND_RATE_44K));
         }
 
-        write32(of, (uint32_t)of.tellp() - prev);
+        flv::write32(of, (uint32_t)of.tellp() - prev);
         prev = of.tellp();
     }
     return 0;
