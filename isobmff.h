@@ -220,7 +220,6 @@ public:
 static const char *BOX_FTYP = "ftyp";
 static const char *BOX_FREE = "free";
 static const char *BOX_MOOV = "moov";
-static const char *BOX_MOOF = "moof";
 static const char *BOX_MVHD = "mvhd";
 static const char *BOX_MDIA = "mdia";
 static const char *BOX_MDHD = "mdhd";
@@ -239,14 +238,23 @@ static const char *BOX_TRAK = "trak";
 static const char *BOX_TKHD = "tkhd";
 static const char *BOX_DTS  = "dts\0";
 
+static const char *BOX_STYP = "styp";
+static const char *BOX_MOOF = "moof";
+static const char *BOX_MFHD = "mfhd";
+static const char *BOX_TRAF = "traf";
+static const char *BOX_TFHD = "tfhd";
+static const char *BOX_TFDT = "tfdt";
+static const char *BOX_TRUN = "trun";
+static const char *BOX_SIDX = "sidx";
+
 
 static const char* HAS_CHILD[] = {BOX_MOOV, BOX_TRAK, BOX_DTS};
 
 bool has_child(const char type[4]){
     return memcmp(type, BOX_MOOV, 4) == 0 || memcmp(type, BOX_TRAK, 4) == 0 ||
         memcmp(type, BOX_DTS, 4) == 0 || memcmp(type, BOX_MDIA, 4) == 0 ||
-        memcmp(type, BOX_MINF, 4) == 0 || memcmp(type, "stbl", 4) == 0
-        || memcmp(type, "udta", 4) == 0;
+        memcmp(type, BOX_MINF, 4) == 0 || memcmp(type, BOX_STBL, 4) == 0
+        || memcmp(type, "udta", 4) == 0 || memcmp(type, BOX_MOOF, 4) == 0 || memcmp(type, BOX_TRAF, 4) == 0;
 }
 
 class BoxFTYP : public Box{
