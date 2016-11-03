@@ -3,6 +3,10 @@
 #ifndef FLV_ISOBMFF_
 #define FLV_ISOBMFF_
 
+#ifndef BOX_READ_SIZE_LIMIT
+# define BOX_READ_SIZE_LIMIT (1024 * 1024 * 10) // skip large box.
+#endif
+
 #include <vector>
 #include <istream>
 #include <ostream>
@@ -60,11 +64,13 @@ public:
     size_t size;
     char type[5];
     std::vector<Box*> children;
+    int ref_count;
 
     Box(const char boxtype[4], size_t sz){
         memcpy(type, boxtype, 4);
         type[4] = '\0';
         size = sz;
+        ref_count = 1;
     }
     virtual bool is_full_box() const {return false;}
 
@@ -78,11 +84,12 @@ public:
     }
 
     template<typename T>
-    void findAllByType(std::vector<T*> &out, const char n[4]) {
+    std::vector<T*>& findAllByType(std::vector<T*> &out, const char n[4]) {
         if (memcmp(type, n, 4)==0)
             out.push_back((T*)this);
         for (int i=0; i<children.size(); i++)
             children[i]->findAllByType(out, n);
+        return out;
     }
 
     void dump(std::ostream &os, const std::string &prefix) const {
@@ -95,6 +102,10 @@ public:
     }
     virtual void dump_attr(std::ostream &os, const std::string &prefix) const {}
 
+    virtual void parse(std::istream &is) {}
+
+    virtual size_t calcSize() {return size;}
+
     virtual void write(std::ostream &os) const {
         write32(os, size);
         os.write(type, 4);
@@ -104,15 +115,16 @@ public:
     }
 
     virtual ~Box() {
-        for (int i=0; i<children.size(); i++) {
-            delete children[i];
+        for (auto &b :children) {
+            b->ref_count--;
+            if (b->ref_count <= 0) delete b;
         }
     }
 };
 
 class FullBox : public Box {
 public:
-    FullBox(const char boxtype[4], size_t sz) : Box(boxtype, sz){};
+    FullBox(const char boxtype[4], size_t sz) : Box(boxtype, sz), version(0), flags(0) {};
     uint8_t version;
     uint32_t flags;
     bool is_full_box() const {return true;}
@@ -136,15 +148,25 @@ protected:
     uint8_t ui8(int pos) const {
         return buf[pos];
     }
-    uint32_t ui32(int pos) const {
-        return (buf[pos] << 24)|(buf[pos+1] << 16)|(buf[pos+2] << 8)|buf[pos+3];
-    }
     uint16_t ui16(int pos) const {
         return (buf[pos] << 8)|buf[pos+1];
+    }
+    uint32_t ui32(int pos) const {
+        return (buf[pos] << 24)|(buf[pos+1] << 16)|(buf[pos+2] << 8)|buf[pos+3];
     }
     uint64_t ui64(int pos) const {
         uint64_t h = ui32(pos);
         return h | ui32(pos+4);
+    }
+    void ui16(int pos, uint16_t v) {
+        buf[pos+0] = v >> 8;
+        buf[pos+1] = v;
+    }
+    void ui32(int pos, uint32_t v) {
+        buf[pos+0] = v >> 24;
+        buf[pos+1] = v >> 16;
+        buf[pos+2] = v >> 8;
+        buf[pos+3] = v;
     }
 public:
     FullBufBox(const char type[4], size_t sz) : FullBox(type, sz) {
@@ -166,32 +188,36 @@ public:
     virtual void write(std::ostream &os) const {
         FullBox::write(os);
         if (size > 8) {
-            os.write((char*)&buf[0], size - 12);
+            os.write((char*)&buf[0], buf.size());
         }
     }
+
+    virtual size_t calcSize() {size = buf.size()+12; return size;}
 };
 
 class UnknownBox : public Box {
 public:
-    std::vector<uint8_t> body;
-    UnknownBox(const char boxtype[4], size_t sz) : Box(boxtype, sz) { body.resize(sz-8); }
+    std::vector<uint8_t> buf;
+    UnknownBox(const char boxtype[4], size_t sz) : Box(boxtype, sz) { buf.resize(sz-8); }
     virtual void dump_attr(std::ostream &os, const std::string &prefix) const {
         os << prefix << " unknown_body: [";
-        for (int i=0; i<10 && i < body.size(); i++) {
-            os << (uint32_t)body[i] << ",";
+        for (int i=0; i<10 && i < buf.size(); i++) {
+            os << (uint32_t)buf[i] << ",";
         }
-        os << "...] " << body.size() << std::endl;
+        os << "...] " << buf.size() << std::endl;
     }
 
     void parse(std::istream &is) {
-        is.read((char*)&body[0], size - 8);
+        is.read((char*)&buf[0], size - 8);
     }
     virtual void write(std::ostream &os) const {
         Box::write(os);
-        if (size > 8) {
-            os.write((char*)&body[0], size - 8);
+        if (buf.size() > 0) {
+            os.write((char*)&buf[0], buf.size());
         }
     }
+
+    virtual size_t calcSize() {size = buf.size()+8; return size;}
 };
 
 class UnknownBoxRef : public Box {
@@ -245,6 +271,7 @@ static const char *BOX_TRAF = "traf";
 static const char *BOX_TFHD = "tfhd";
 static const char *BOX_TFDT = "tfdt";
 static const char *BOX_TRUN = "trun";
+static const char *BOX_TREX = "trex";
 static const char *BOX_SIDX = "sidx";
 
 
@@ -271,7 +298,6 @@ public:
     }
 
     void parse(std::istream &is) {
-        size_t pos = is.tellg();
         is.read(major, 4);
         minor = read32(is);
         for (int i=0; i<(size-16)/4; i++) {
@@ -279,8 +305,9 @@ public:
             is.read((char*)&b, 4);
             compat.push_back(b);
         }
-        is.seekg(pos + size - 8,  std::ios_base::beg);
     }
+
+    virtual size_t calcSize() {size = compat.size()*4 +16; return size;}
 
     virtual void write(std::ostream &os) const {
         Box::write(os);
@@ -319,8 +346,7 @@ public:
 
 class BoxMVHD : public FullBox{
 public:
-    BoxMVHD(size_t sz) : FullBox(BOX_MVHD, sz) {
-    }
+    BoxMVHD(size_t sz) : FullBox(BOX_MVHD, sz) {}
     uint32_t created;
     uint32_t modified;
     uint32_t rate;
@@ -339,7 +365,6 @@ public:
     }
 
     void parse(std::istream &is) {
-        size_t pos = is.tellg();
         FullBox::parse(is);
         if (version != 0) return ; // TODO: error.
         created = read32(is);
@@ -466,6 +491,22 @@ public:
         }
     }
 
+    void duration(uint64_t t) {
+        if (version == 0) {
+            ui32(4*2 + 4*2, t);
+        } else {
+            ui32(8*2 + 4*2, t >> 32);
+            ui32(8*2 + 4*2 + 4, t);
+        }
+    }
+    void trackId(uint32_t id) {
+        if (version == 0) {
+            ui32(4*2, id);
+        } else {
+            ui32(8*2, id);
+        }
+    }
+
     virtual void dump_attr(std::ostream &os, const std::string &prefix) const {
         os << prefix << " track: " << trackId() << std::endl;
         os << prefix << " duration: " << duration() << std::endl;
@@ -489,6 +530,11 @@ public:
     }
     std::string name() const {
         return std::string((char*)&buf[20],buf.size()-20);
+    }
+
+    void name(const std::string &name) {
+        buf.resize(20 + name.size() + 1);
+        memcpy(&buf[20], name.c_str(), name.size()+1);
     }
 
     virtual void dump_attr(std::ostream &os, const std::string &prefix) const {
@@ -526,10 +572,13 @@ public:
 class BoxSTSC : public FullBufBox{
 public:
     BoxSTSC(size_t sz) : FullBufBox(BOX_STSC, sz) {}
+    BoxSTSC() : FullBufBox(BOX_STSC, 16) {clear();}
 
     uint32_t count() const {return ui32(0);}
     uint32_t first(int n) const {return ui32(4 + n * 12);}
     uint32_t spc(int n) const {return ui32(4 + n * 12 + 4);}
+    void clear(){buf.resize(4); ui32(0,0);}
+
     uint32_t sampleToChunk(int n) const {
         // n: [0..(numSample-1)]
         uint32_t c = count();
@@ -563,11 +612,13 @@ public:
 class BoxSTTS : public FullBufBox{
 public:
     BoxSTTS(size_t sz) : FullBufBox(BOX_STTS, sz) {}
+    BoxSTTS() : FullBufBox(BOX_STTS, 16) {clear();}
 
     uint32_t count() const {return ui32(0);}
 
     uint32_t count(uint32_t n) const {return ui32(4 + n*8);}
     uint32_t delta(uint32_t n) const {return ui32(4 + n*8 + 4);}
+    void clear(){buf.resize(4); ui32(0,0);}
 
     uint64_t sampleToTime(uint32_t n) const {
         uint32_t c = count();
@@ -631,9 +682,18 @@ public:
 class BoxSTCO : public FullBufBox{
 public:
     BoxSTCO(size_t sz) : FullBufBox(BOX_STCO, sz) {}
+    BoxSTCO() : FullBufBox(BOX_STCO, 16) {clear();}
 
     uint32_t count() const {return ui32(0);}
     uint32_t offset(int pos) const {return ui32(4+pos*4);}
+    void clear(){buf.resize(4); ui32(0,0);}
+
+    void moveAll(int ofs) {
+        uint32_t c = count();
+        for (int i=0; i<c;i++) {
+            ui32(4+i*4, offset(i) + ofs);
+        }
+    }
 
     virtual void dump_attr(std::ostream &os, const std::string &prefix) const {
         uint32_t c = count();
@@ -650,6 +710,13 @@ public:
 
     uint32_t count() const {return ui32(0);}
     uint32_t sync(int pos) const {return ui32(4+pos*4);}
+    bool include(uint32_t sample) const {
+        uint32_t c = count();
+        for (int i=0; i<c; i++) {
+            if (sync(i) == sample) return true; // TODO binary search.
+        }
+        return false;
+    }
 
     virtual void dump_attr(std::ostream &os, const std::string &prefix) const {
         uint32_t c = count();
@@ -663,10 +730,12 @@ public:
 class BoxSTSZ : public FullBufBox{
 public:
     BoxSTSZ(size_t sz) : FullBufBox(BOX_STSZ, sz) {}
+    BoxSTSZ() : FullBufBox(BOX_STSZ, 16) {clear();}
 
     uint32_t constantSize() const {return ui32(0);}
     uint32_t count() const {return ui32(4);}
     uint32_t size(int pos) const {return ui32(8+pos*4);}
+    void clear(){buf.resize(8); ui32(0,0); ui32(4,0);}
 
     virtual void dump_attr(std::ostream &os, const std::string &prefix) const {
         uint32_t c = count();
@@ -680,111 +749,441 @@ public:
     }
 };
 
-class BoxSimpleList : public Box {
+
+class BoxSTYP : public Box{
 public:
-    BoxSimpleList(const char boxtype[4], size_t sz) : Box(boxtype, sz) {
+    BoxSTYP(size_t sz) : Box(BOX_STYP, sz) {
+    }
+    char major[4];
+    uint32_t minor;
+    std::vector<uint32_t> compat;
+
+    void parse(std::istream &is) {
+        is.read(major, 4);
+        minor = read32(is);
+        for (int i=0; i<(size-16)/4; i++) {
+            uint32_t b;
+            is.read((char*)&b, 4);
+            compat.push_back(b);
+        }
     }
 
+    virtual void write(std::ostream &os) const {
+        Box::write(os);
+        os.write(major, 4);
+        write32(os, minor);
+        os.write((char*)&compat[0], compat.size()*4);
+    }
+
+    virtual size_t calcSize() {size = compat.size()*4 +16; return size;}
+
+    virtual void dump_attr(std::ostream &os, const std::string &prefix) const {
+        os << prefix << " major: " << major << std::endl;
+        os << prefix << " minor: " << minor << std::endl;
+    }
+};
+
+class BoxTREX : public FullBox{
+public:
+    uint32_t track_id;
+    uint32_t sample_desc;
+    uint32_t sample_duration;
+    uint32_t sample_size;
+    uint32_t sample_flags;
+
+    BoxTREX(size_t sz) : FullBox(BOX_TREX, sz) {}
+    BoxTREX() : FullBox(BOX_TREX, 8 + 4 + 20), track_id(1), sample_desc(1) {
+        sample_duration = 0;
+        sample_size = 0;
+        sample_flags = 0;
+    }
+
+    void parse(std::istream &is) {
+        FullBox::parse(is);
+        track_id = read32(is);
+        sample_desc = read32(is);
+        sample_duration = read32(is);
+        sample_size = read32(is);
+        sample_flags = read32(is);
+    }
+
+    void write(std::ostream &os) const {
+        FullBox::write(os);
+        write32(os, track_id);
+        write32(os, sample_desc);
+        write32(os, sample_duration);
+        write32(os, sample_size);
+        write32(os, sample_flags);
+    }
+
+    size_t calcSize() {size = 32; return size;}
+
+    virtual void dump_attr(std::ostream &os, const std::string &prefix) const {
+        FullBox::dump_attr(os, prefix);
+        os << prefix << " track_id: " << track_id << std::endl;
+        os << prefix << " sample_desc: " << sample_desc << std::endl;
+        os << prefix << " sample_duration: " << sample_duration << std::endl;
+        os << prefix << " sample_size: " << sample_size << std::endl;
+        os << prefix << " sample_flags: " << sample_flags << std::endl;
+    }
+};
+
+class BoxSIDX : public FullBox{
+public:
+    uint32_t track_id;
+    uint32_t time_scale;
+    uint64_t pts;
+    uint64_t first_offset; // offset to moof
+    std::vector<uint32_t> data;
+
+    BoxSIDX(size_t sz) : FullBox(BOX_SIDX, sz) {}
+    BoxSIDX() : FullBox(BOX_SIDX, 12+28), track_id(1), time_scale(1000),first_offset(0) {version = 1;}
+
+    int count() const {return data.size()/3;}
+    uint32_t duration(int n) const {return data[n*3+1];}
+    bool startsWithSAP(int n) const {return (data[n*3+2]&0x80000000) != 0;}
+    void add(uint32_t ref, uint32_t duration, uint32_t flag) {
+        data.push_back(ref);
+        data.push_back(duration);
+        data.push_back(flag);
+    }
+
+    void parse(std::istream &is) {
+        FullBox::parse(is);
+        track_id = read32(is);
+        time_scale = read32(is);
+        pts = read64(is);
+        first_offset = read64(is);
+        int count = read32(is);
+        for (int i=0; i<count; i++) {
+            data.push_back(read32(is));
+            data.push_back(read32(is));
+            data.push_back(read32(is));
+        }
+    }
+
+    void write(std::ostream &os) const {
+        FullBox::write(os);
+        write32(os, track_id);
+        write32(os, time_scale);
+        write64(os, pts);
+        write64(os, first_offset);
+        write32(os, count());
+        for (int i=0; i<data.size(); i++) {
+            write32(os, data[i]);
+        }
+    }
+
+    size_t calcSize() {size = 12+28 + data.size()*sizeof(uint32_t); return size;}
+
+    virtual void dump_attr(std::ostream &os, const std::string &prefix) const {
+        FullBox::dump_attr(os, prefix);
+        os << prefix << " track_id: " << track_id << std::endl;
+        os << prefix << " time_scale: " << time_scale << std::endl;
+        os << prefix << " pts: " << pts << std::endl;
+        os << prefix << " first_offset: " << first_offset << std::endl;
+        os << prefix << " count: " << count() << std::endl;
+        for (int i=0; i<count(); i++) {
+          os << prefix << "  ref: " << data[i*3] << " duration:" << data[i*3+1] << " sap:" << startsWithSAP(i) << std::endl;
+        }
+    }
+};
+
+class BoxMFHD : public FullBox{
+public:
+    uint32_t fragments;
+
+    BoxMFHD(size_t sz = 0) : FullBox(BOX_MFHD, sz), fragments(1) {}
+
+    void parse(std::istream &is) {
+        FullBox::parse(is);
+        fragments = read32(is);
+    }
+
+    void write(std::ostream &os) const {
+        FullBox::write(os);
+        write32(os, fragments);
+    }
+
+    size_t calcSize() {size = 12 + 4; return size;}
+
+    void dump_attr(std::ostream &os, const std::string &prefix) const {
+        FullBox::dump_attr(os, prefix);
+        os << prefix << " fragments: " << fragments << std::endl;
+    }
+};
+
+
+class BoxTFDT : public FullBox{
+public:
+    uint64_t flag_start;
+
+    BoxTFDT(size_t sz = 0) : FullBox(BOX_TFDT, sz), flag_start(0) {}
+
+    void parse(std::istream &is) {
+        FullBox::parse(is);
+        if (version == 1) {
+            flag_start = read64(is);
+        } else {
+            flag_start = read32(is);
+        }
+    }
+
+    void write(std::ostream &os) const {
+        FullBox::write(os);
+        write64(os, flag_start);
+    }
+
+    size_t calcSize() {
+        version = 1; // always 64bit
+        size = 12 + 8;
+        return size;
+    }
+
+    void dump_attr(std::ostream &os, const std::string &prefix) const {
+        FullBox::dump_attr(os, prefix);
+        os << prefix << " flag_start: " << flag_start << std::endl;
+    }
+};
+
+class BoxTRUN : public FullBox{
+public:
+    static const int FLAG_DATA_OFFSET = 0x01;
+    static const int FLAG_FIRST_SAMPLE_FLAGS = 0x04;
+    static const int FLAG_SAMPLE_DURATION = 0x0100;
+    static const int FLAG_SAMPLE_SIZE = 0x0200;
+    static const int FLAG_SAMPLE_FLAGS = 0x0400;
+    static const int FLAG_SAMPLE_CTS = 0x0800;
+
+    uint64_t data_offset; // := sizeof moof.
+    std::vector<uint32_t> data;
+
+    BoxTRUN(size_t sz) : FullBox(BOX_TRUN, sz) {}
+    BoxTRUN() : FullBox(BOX_TRUN, 12+28) {}
+
+    int count() const {return data.size()/fields();}
+    uint32_t duration(int n) const {return data[n*3+1];}
+    bool startsWithSAP(int n) const {return (data[n*3+2]&0x80000000) != 0;}
+    void add(uint32_t v) {
+        data.push_back(v);
+    }
+
+    void parse(std::istream &is) {
+        FullBox::parse(is);
+        int n = read32(is) * fields();
+        for (int i=0; i<n; i++) {
+            data.push_back(read32(is));
+        }
+    }
+
+    void write(std::ostream &os) const {
+        FullBox::write(os);
+        write32(os, count());
+
+        if (flags & FLAG_DATA_OFFSET) {
+            write32(os, data_offset);
+        }
+
+        if (flags & FLAG_FIRST_SAMPLE_FLAGS) {
+            write32(os, 0);
+        }
+
+        for (int i=0; i<data.size(); i++) {
+            write32(os, data[i]);
+        }
+    }
+
+    size_t calcSize() {size = 12+8 + data.size()*sizeof(uint32_t); return size;}
+
+    virtual void dump_attr(std::ostream &os, const std::string &prefix) const {
+        FullBox::dump_attr(os, prefix);
+        os << prefix << " count: " << count() << std::endl;
+    }
+
+private:
+    int fields() const {
+        int f = 0;
+        if (flags & FLAG_SAMPLE_DURATION) f++;
+        if (flags & FLAG_SAMPLE_SIZE) f++;
+        if (flags & FLAG_SAMPLE_FLAGS) f++;
+        if (flags & FLAG_SAMPLE_CTS) f++;
+        return f;
+    }
+};
+
+class BoxTFHD : public FullBox{
+public:
+    static const int FLAG_BASE_DATA_OFFSET = 0x01;
+    static const int FLAG_STSD_ID = 0x02;
+    static const int FLAG_DEFAULT_DURATION = 0x08;
+    static const int FLAG_DEFAULT_SIZE = 0x10;
+    static const int FLAG_DEFAULT_FLAGS = 0x20;
+    static const int FLAG_DURATION_IS_EMPTY = 0x010000;
+    static const int FLAG_DEFAULT_BASE_IS_MOOF = 0x020000;
+
+    uint32_t track_id;
+    uint32_t default_duration;
+    uint32_t default_size;
+    uint32_t default_flags;
+
+    BoxTFHD(size_t sz = 0) : FullBox(BOX_TFHD, sz), track_id(1) {
+        flags = FLAG_DEFAULT_BASE_IS_MOOF | FLAG_DEFAULT_DURATION;
+    }
+
+    void parse(std::istream &is) {
+        FullBox::parse(is);
+        track_id = read32(is);
+    }
+
+    void write(std::ostream &os) const {
+        FullBox::write(os);
+        write32(os, track_id);
+        if (flags & FLAG_BASE_DATA_OFFSET) {
+            write64(os, 0);
+        }
+        if (flags & FLAG_DEFAULT_DURATION) {
+            write32(os, default_duration);
+        }
+        if (flags & FLAG_DEFAULT_SIZE) {
+            write32(os, default_size);
+        }
+        if (flags & FLAG_DEFAULT_FLAGS) {
+            write32(os, default_flags);
+        }
+    }
+
+    size_t calcSize() {
+        size = 12 + 4;
+        if (flags & FLAG_BASE_DATA_OFFSET) {
+            size += 8;
+        }
+        if (flags & FLAG_DEFAULT_DURATION) {
+            size += 4;
+        }
+        if (flags & FLAG_DEFAULT_SIZE) {
+            size += 4;
+        }
+        if (flags & FLAG_DEFAULT_FLAGS) {
+            size += 4;
+        }
+        return size;
+    }
+
+    void dump_attr(std::ostream &os, const std::string &prefix) const {
+        FullBox::dump_attr(os, prefix);
+        os << prefix << " track_id: " << track_id << std::endl;
+    }
+};
+
+class BoxSimpleList : public Box {
     bool chktype(const char t1[4], const char t2[4]) {
         return memcmp(t1, t2, 4)==0;
     }
+public:
+    BoxSimpleList(const char boxtype[4], size_t sz = 0) : Box(boxtype, sz) {}
 
-    Box* createBox(const char boxtype[4], const size_t sz, std::istream &is) {
+    void add(Box *b) {
+        b->ref_count++;
+        children.push_back(b);
+    }
+    void clear() {
+        for (auto &b :children) {
+            b->ref_count--;
+            if (b->ref_count <= 0) delete b;
+        }
+        children.clear();
+    }
+
+    Box* createBox(const char boxtype[4], const size_t sz) {
         if (chktype(boxtype, BOX_FTYP)) {
-            auto *b = new BoxFTYP(sz);
-            b->parse(is);
-            return b;
+            return new BoxFTYP(sz);
         }
         if (chktype(boxtype, BOX_FREE)) {
-            auto *b = new BoxFREE(sz);
-            b->parse(is);
-            return b;
+            return new BoxFREE(sz);
         }
         if (chktype(boxtype, BOX_MVHD)) {
-            auto *b = new BoxMVHD(sz);
-            b->parse(is);
-            return b;
+            return new BoxMVHD(sz);
         }
         if (chktype(boxtype, BOX_MDHD)) {
-            auto *b = new BoxMDHD(sz);
-            b->parse(is);
-            return b;
+            return new BoxMDHD(sz);
         }
         if (chktype(boxtype, BOX_TKHD)) {
-            auto *b = new BoxTKHD(sz);
-            b->parse(is);
-            return b;
+            return new BoxTKHD(sz);
         }
         if (chktype(boxtype, BOX_HDLR)) {
-            auto *b = new BoxHDLR(sz);
-            b->parse(is);
-            return b;
+            return new BoxHDLR(sz);
         }
         if (chktype(boxtype, BOX_STSC)) {
-            auto *b = new BoxSTSC(sz);
-            b->parse(is);
-            return b;
+            return new BoxSTSC(sz);
         }
         if (chktype(boxtype, BOX_STSD)) {
             auto *b = new BoxSTSD(sz);
-            b->parse(is);
             return b;
         }
         if (chktype(boxtype, BOX_STSS)) {
             auto *b = new BoxSTSS(sz);
-            b->parse(is);
             return b;
         }
         if (chktype(boxtype, BOX_STSZ)) {
             auto *b = new BoxSTSZ(sz);
-            b->parse(is);
             return b;
         }
         if (chktype(boxtype, BOX_STCO)) {
             auto *b = new BoxSTCO(sz);
-            b->parse(is);
             return b;
         }
         if (chktype(boxtype, BOX_STTS)) {
-            BoxSTTS *b = new BoxSTTS(sz);
-            b->parse(is);
+            auto *b = new BoxSTTS(sz);
             return b;
         }
         if (chktype(boxtype, BOX_CTTS)) {
-            BoxCTTS *b = new BoxCTTS(sz);
-            b->parse(is);
+            auto *b = new BoxCTTS(sz);
             return b;
         }
 
+        if (chktype(boxtype, BOX_STYP)) {
+            return new BoxSTYP(sz);
+        }
+        if (chktype(boxtype, BOX_SIDX)) {
+            return new BoxSIDX(sz);
+        }
+        if (chktype(boxtype, BOX_TREX)) {
+            return new BoxTREX(sz);
+        }
+
         if (has_child(boxtype)) {
-            BoxSimpleList *b = new BoxSimpleList(boxtype, sz);
-            b->parse(is);
-            return b;
+            return new BoxSimpleList(boxtype, sz);
         }
-        if (sz > 1024 * 1024 * 10) { // skip large box.
-            UnknownBoxRef *b = new UnknownBoxRef(boxtype, sz);
-            b->parse(is);
-            return b;
+        if (sz > BOX_READ_SIZE_LIMIT) { // skip large box.
+            return new UnknownBoxRef(boxtype, sz);
         }
-        UnknownBox *b = new UnknownBox(boxtype, sz);
-        b->parse(is);
-        return b;
+        return new UnknownBox(boxtype, sz);
     }
 
     void parse(std::istream &is) {
         size_t pos = is.tellg();
-        pos += size - 8;
-
-        while (is.tellg() < pos) {
+        size_t end = pos + size - 8;
+        char type[5] = {0};
+        while (pos < end) {
             uint32_t sz = read32(is);
-            char type[5] = {0};
             is.read(&type[0],4);
             if (is.eof()) break;
-            children.push_back(createBox(type,sz, is));
+
+            Box *b = createBox(type,sz);
+            b->parse(is);
+            children.push_back(b);
+            pos += sz;
+            is.seekg(pos,  std::ios_base::beg);
         }
-        is.seekg(pos,  std::ios_base::beg);
     }
 
+    virtual size_t calcSize() {
+        size = 8;
+        for (auto &b : children) {
+            size += b->calcSize();
+        }
+        return size;
+    }
 };
 
 
@@ -793,6 +1192,7 @@ public:
     Mp4Root() : BoxSimpleList("ROOT", 0x7fffffff) {} // TODO size
     virtual void write(std::ostream &os) const {
         for (int i=0; i<children.size(); i++) {
+            children[i]->calcSize();
             children[i]->write(os);
         }
     }
