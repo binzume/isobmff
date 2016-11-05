@@ -1184,6 +1184,46 @@ public:
     }
 };
 
+class BoxPSSH : public FullBox{
+public:
+    uint8_t system_id[16];
+    std::vector<std::string> kids;
+    std::vector<uint8_t> data;
+
+    BoxPSSH(size_t sz = 0) : FullBox(BOX_PSSH, sz) {}
+
+    void parse(std::istream &is) {
+        FullBox::parse(is);
+        is.read((char*)system_id, 16);
+        int count = read32(is);
+        char keybuf[16];
+        for (int i=0;i<count; i++) {
+            is.read(keybuf, 16);
+            kids.push_back(std::string(keybuf, 16));
+        }
+        data.resize(read32(is));
+        is.read((char*)&data[0], data.size());
+    }
+
+    void write(std::ostream &os) const {
+        FullBox::write(os);
+        os.write((char*)system_id ,16);
+        write32(os, kids.size());
+        for (auto &kid : kids) {
+            os.write(kid.c_str(), 16);
+        }
+        write32(os, data.size());
+        os.write((char*)&data[0], data.size());
+    }
+
+    size_t calcSize() {size = HEADER_SIZE + 20 + kids.size()*16; return size;}
+
+    void dump_attr(std::ostream &os, const std::string &prefix) const {
+        FullBox::dump_attr(os, prefix);
+        os << prefix << " count: " << kids.size() << std::endl;
+    }
+};
+
 class BoxSimpleList : public Box {
     bool chktype(const char t1[4], const char t2[4]) {
         return memcmp(t1, t2, 4)==0;
