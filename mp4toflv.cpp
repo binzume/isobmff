@@ -24,9 +24,9 @@ int main() {
     auto tkhd = (BoxTKHD*)track->findByType(BOX_TKHD);
     auto mdhd = (BoxMDHD*)track->findByType(BOX_MDHD);
     auto hdlr = (BoxHDLR*)track->findByType(BOX_HDLR);
-    cout << "resoluion: " << tkhd->width()/65536 << "x" <<  tkhd->width()/65536 << endl;
-    cout << "duration: " << mdhd->duration() / mdhd->timeScale()
-         << "sec. (" << mdhd->duration() << "/" <<  mdhd->timeScale() << endl;
+    cout << "resoluion: " << tkhd->width/65536 << "x" <<  tkhd->width/65536 << endl;
+    cout << "duration: " << mdhd->duration / mdhd->time_scale
+         << "sec. (" << mdhd->duration << "/" <<  mdhd->time_scale << endl;
     cout << "type:" << hdlr->typeAsString() << " (" << hdlr->name() << ")" << endl;
 
     auto stsc = (BoxSTSC*)track->findByType(BOX_STSC);
@@ -78,18 +78,15 @@ int main() {
     vector<uint8_t> buf;
     ifs.clear();
     for (int i=0; i<stsz->count(); i++) {
-        cout << " " << i << endl;
-
         // read sample
         auto chunk = stsc->sampleToChunk(i);
         if (lastChunk != chunk) {
             lastChunk = chunk;
             offset = 0;
         }
+        cout << "timestamp: " << stts->sampleToTime(i) << endl;
         cout << "  size:" << stsz->size(i) << endl;
-        cout << "  chunk:" << chunk << endl;
         cout << "  offset: " << stco->offset(chunk) + offset << endl;
-        cout << "  timestamp: " << stts->sampleToTime(i) << endl;
         uint32_t timeOffset = 0;
         if (ctts != nullptr) {
             timeOffset = ctts->sampleToOffset(i);
@@ -114,9 +111,9 @@ int main() {
         }
 
         // write flv tag.
-        th.timestamp = stts->sampleToTime(i) * 1000 / mdhd->timeScale();
+        th.timestamp = stts->sampleToTime(i) * 1000 / mdhd->time_scale;
         if (th.type == flv::TAG_TYPE_VIDEO) {
-            flv::write_video(of, th, buf, codecId, timeOffset * 1000 / mdhd->timeScale(), rap);
+            flv::write_video(of, th, buf, codecId, timeOffset * 1000 / mdhd->time_scale, rap);
         } else {
             flv::write_audio(of, th, buf, flv::audio_format(codecId, 2, flv::SOUND_RATE_44K));
         }

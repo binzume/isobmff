@@ -43,15 +43,19 @@ static inline uint64_t read64(std::istream &is) {
 
 static inline void write8(std::ostream &is, uint8_t d) {
     char buf[] = {d};
-    is.write(buf, 1);
+    is.write(buf, sizeof(buf));
+}
+static inline void write16(std::ostream &is, uint16_t d) {
+    char buf[] = {d >> 8, d};
+    is.write(buf, sizeof(buf));
 }
 static inline void write24(std::ostream &is, uint32_t d) {
     char buf[] = {d >> 16, d >> 8, d};
-    is.write(buf, 3);
+    is.write(buf, sizeof(buf));
 }
 static inline void write32(std::ostream &is, uint32_t d) {
     char buf[] = {d >> 24, d >> 16, d >> 8, d};
-    is.write(buf, 4);
+    is.write(buf, sizeof(buf));
 }
 static inline void write64(std::ostream &os, uint64_t d) {
     write32(os, d >> 32);
@@ -138,8 +142,13 @@ public:
         write8(os, version);
         write24(os, flags);
     }
-};
+    virtual void dump_attr(std::ostream &os, const std::string &prefix) const {
+        os << prefix << " v" << version << " flags:" << flags << std::endl;
+    }
 
+protected:
+    static const int HEADER_SIZE = 12;
+};
 
 
 class FullBufBox : public FullBox{
@@ -170,7 +179,7 @@ protected:
     }
 public:
     FullBufBox(const char type[4], size_t sz) : FullBox(type, sz) {
-        buf.resize(sz - 12);
+        buf.resize(sz - HEADER_SIZE);
     }
 
     virtual void dump_attr(std::ostream &os, const std::string &prefix) const {
@@ -183,7 +192,7 @@ public:
 
     void parse(std::istream &is) {
         FullBox::parse(is);
-        is.read((char*)&buf[0], size - 12);
+        is.read((char*)&buf[0], size - HEADER_SIZE);
     }
     virtual void write(std::ostream &os) const {
         FullBox::write(os);
@@ -192,7 +201,7 @@ public:
         }
     }
 
-    virtual size_t calcSize() {size = buf.size()+12; return size;}
+    virtual size_t calcSize() {size = buf.size()+HEADER_SIZE; return size;}
 };
 
 class UnknownBox : public Box {
@@ -263,6 +272,7 @@ static const char *BOX_CTTS = "ctts";
 static const char *BOX_TRAK = "trak";
 static const char *BOX_TKHD = "tkhd";
 static const char *BOX_DTS  = "dts\0";
+static const char *BOX_UDTA = "udta";
 
 static const char *BOX_STYP = "styp";
 static const char *BOX_MOOF = "moof";
@@ -273,15 +283,18 @@ static const char *BOX_TFDT = "tfdt";
 static const char *BOX_TRUN = "trun";
 static const char *BOX_TREX = "trex";
 static const char *BOX_SIDX = "sidx";
+static const char *BOX_PSSH = "pssh";
 
+static const int SAMPLE_FLAGS_NO_SYNC = 0x01010000;
+static const int SAMPLE_FLAGS_SYNC = 0x02000000;
 
-static const char* HAS_CHILD[] = {BOX_MOOV, BOX_TRAK, BOX_DTS};
+static const char* HAS_CHILD_BOX[] = {BOX_MOOV, BOX_TRAK, BOX_DTS, BOX_MDIA, BOX_MINF, BOX_STBL, BOX_UDTA, BOX_MOOF, BOX_TRAF, "edts"};
 
 bool has_child(const char type[4]){
-    return memcmp(type, BOX_MOOV, 4) == 0 || memcmp(type, BOX_TRAK, 4) == 0 ||
-        memcmp(type, BOX_DTS, 4) == 0 || memcmp(type, BOX_MDIA, 4) == 0 ||
-        memcmp(type, BOX_MINF, 4) == 0 || memcmp(type, BOX_STBL, 4) == 0
-        || memcmp(type, "udta", 4) == 0 || memcmp(type, BOX_MOOF, 4) == 0 || memcmp(type, BOX_TRAF, 4) == 0;
+    for (auto b : HAS_CHILD_BOX) {
+        if (memcmp(type, b, 4) == 0) return true;
+    }
+    return false;
 }
 
 class BoxFTYP : public Box{
@@ -346,22 +359,26 @@ public:
 
 class BoxMVHD : public FullBox{
 public:
-    BoxMVHD(size_t sz) : FullBox(BOX_MVHD, sz) {}
+    BoxMVHD(size_t sz = HEADER_SIZE + 24 * 4) : FullBox(BOX_MVHD, sz) {}
     uint32_t created;
     uint32_t modified;
-    uint32_t rate;
-    uint32_t volume;
     uint32_t timeScale;
     uint64_t duration;
-    std::vector<uint8_t> buf;
+    uint32_t rate;
+    uint32_t volume;
+    uint32_t matrix[9];
+    uint32_t next_track_id;
 
-    virtual void dump_attr(std::ostream &os, const std::string &prefix) const {
-        FullBox::dump_attr(os,prefix);
-        os << prefix << " created: " << created << std::endl;
-        os << prefix << " modified: " << modified << std::endl;
-        os << prefix << " duration: " << duration << "/" << timeScale << std::endl;
-        os << prefix << " rate: " << rate << std::endl;
-        os << prefix << " volume: " << volume << std::endl;
+    void init() {
+        created = 0;
+        modified = 0;
+        rate = 0x10000;
+        volume = 0x1000000;
+        next_track_id = 3;
+        for (int i=0; i<9; i++) matrix[i] = 0;
+        matrix[0] = 0x10000;
+        matrix[4] = 0x10000;
+        matrix[8] = 0x40000000;
     }
 
     void parse(std::istream &is) {
@@ -373,8 +390,13 @@ public:
         duration = read32(is);
         rate = read32(is);
         volume = read32(is);
-        buf.resize(size - (8 + 4 + 4 * 6)); // fullbox + 32bit*6
-        is.read((char*)&buf[0], size - (8 + 4 + 4 * 6));
+        read32(is);
+        read32(is);
+        for (auto &d : matrix) {
+            d = read32(is);
+        }
+        for (int i=0; i<6; i++) {read32(is);}
+        next_track_id = read32(is);
     }
     virtual void write(std::ostream &os) const {
         FullBox::write(os);
@@ -384,162 +406,249 @@ public:
         write32(os, duration);
         write32(os, rate);
         write32(os, volume);
-        os.write((char*)&buf[0], buf.size());
+        write32(os, 0);
+        write32(os, 0);
+        for (auto &d : matrix) {
+            write32(os, d);
+        }
+        for (int i=0; i<6; i++) {write32(os, 0);}
+        write32(os, next_track_id);
+    }
+
+    void dump_attr(std::ostream &os, const std::string &prefix) const {
+        FullBox::dump_attr(os,prefix);
+        os << prefix << " created: " << created << std::endl;
+        os << prefix << " modified: " << modified << std::endl;
+        os << prefix << " duration: " << duration << "/" << timeScale << std::endl;
+        os << prefix << " rate: " << rate << std::endl;
+        os << prefix << " volume: " << volume << std::endl;
+        os << prefix << " next_track: " << next_track_id << std::endl;
+        os << prefix << " matrix: [";
+        for (auto &d : matrix) {
+            os << d << ",";
+        }
+        os << std::endl;
     }
 };
 
-class BoxMDHD : public FullBufBox{
+class BoxMDHD : public FullBox{
 public:
-    BoxMDHD(size_t sz) : FullBufBox(BOX_MDHD, sz) {}
+    BoxMDHD(size_t sz) : FullBox(BOX_MDHD, sz) {}
+    BoxMDHD() : FullBox(BOX_MDHD, 0) {init();}
 
-    uint64_t created() const {
-        if (version == 0) {
-            return ui32(0);
-        } else {
-            return ui64(0);
-        }
+    uint64_t created;
+    uint64_t modified;
+    uint32_t time_scale;
+    uint64_t duration;
+    uint16_t lang;
+
+    void init() {
+        created = 0;
+        modified = 0;
+        time_scale = 1;
+        duration = 0;
+        lang = 0x55c4; // 'und'
+        calcSize();
     }
-    uint64_t modified() const {
-        if (version == 0) {
-            return ui32(4);
+
+    void parse(std::istream &is) {
+        FullBox::parse(is);
+        if (version == 1) {
+            created = read64(is);
+            modified = read64(is);
+            time_scale = read32(is);
+            duration = read64(is);
         } else {
-            return ui64(8);
+            created = read32(is);
+            modified = read32(is);
+            time_scale = read32(is);
+            duration = read32(is);
         }
+        lang = read16(is); // 1b + 5b * 3
+        read16(is); // 0
     }
-    uint32_t timeScale() const {
-        if (version == 0) {
-            return ui32(4*2);
+    virtual void write(std::ostream &os) const {
+        FullBox::write(os);
+        if (version == 1) {
+            write64(os, created);
+            write64(os, modified);
+            write32(os, time_scale);
+            write64(os, duration);
         } else {
-            return ui32(8*2);
+            write32(os, created);
+            write32(os, modified);
+            write32(os, time_scale);
+            write32(os, duration);
         }
+        write16(os, lang);
+        write16(os, 0);
     }
-    uint64_t duration() const {
-        if (version == 0) {
-            return ui32(4*2 + 4);
-        } else {
-            return ui64(8*2 + 4);
-        }
+
+    virtual size_t calcSize() {
+        size = HEADER_SIZE + 2 * 4 + 3 * (version == 1 ? 8 : 4);
+        return size;
     }
 
     virtual void dump_attr(std::ostream &os, const std::string &prefix) const {
-        os << prefix << " timeScale: " << timeScale() << std::endl;
-        os << prefix << " duration: " << duration() << std::endl;
+        os << prefix << " timeScale: " << time_scale << std::endl;
+        os << prefix << " duration: " << duration << std::endl;
     }
 };
 
-class BoxTKHD : public FullBufBox{
+class BoxTKHD : public FullBox{
 public:
-    BoxTKHD(size_t sz) : FullBufBox(BOX_TKHD, sz) {}
+    BoxTKHD(size_t sz = 0) : FullBox(BOX_TKHD, sz) {}
 
-    uint64_t created() const {
-        if (version == 0) {
-            return ui32(0);
-        } else {
-            return ui64(0);
-        }
-    }
-    uint64_t modified() const {
-        if (version == 0) {
-            return ui32(4);
-        } else {
-            return ui64(8);
-        }
-    }
-    uint32_t trackId() const {
-        if (version == 0) {
-            return ui32(4*2);
-        } else {
-            return ui32(8*2);
-        }
-    }
-    // ui32 reserved.
-    uint64_t duration() const {
-        if (version == 0) {
-            return ui32(4*2 + 4*2);
-        } else {
-            return ui64(8*2 + 4*2);
-        }
-    }
-    // ui32[2] si16[2]
+    uint64_t created;
+    uint64_t modified;
+    uint32_t track_id;
+    uint64_t duration;
+    uint16_t layer;
+    uint16_t volume;
+    uint32_t matrix[9];
+    uint32_t width;
+    uint32_t height;
 
-    uint16_t volume() const {
-        if (version == 0) {
-            return ui16(4*3 + 4*5);
-        } else {
-            return ui16(8*3 + 4*5);
-        }
-    }
-    int32_t matrix(int n) const {
-        if (version == 0) {
-            return ui32(4*3 + 4*6 + n);
-        } else {
-            return ui32(8*3 + 4*6 + n);
-        }
-    }
-    uint32_t width() const {
-        if (version == 0) {
-            return ui32(4*3 + 4*15);
-        } else {
-            return ui32(8*3 + 4*15);
-        }
-    }
-    uint32_t height() const {
-        if (version == 0) {
-            return ui32(4*3 + 4*16);
-        } else {
-            return ui32(8*3 + 4*16);
-        }
+    void init() {
+        version = 0;
+        flags = 3;
+        created = 0;
+        modified = 0;
+        track_id = 1;
+        duration = 0;
+        layer = 0;
+        volume = 0x100;
+        for (int i=0; i<9; i++) matrix[i] = 0;
+        matrix[0] = 0x10000;
+        matrix[4] = 0x10000;
+        matrix[8] = 0x40000000;
+        width = 1;
+        height = 1;
     }
 
-    void duration(uint64_t t) {
-        if (version == 0) {
-            ui32(4*2 + 4*2, t);
+    void parse(std::istream &is) {
+        FullBox::parse(is);
+        if (version == 1) {
+            created = read64(is);
+            modified = read64(is);
+            track_id = read32(is);
+            read32(is); // 0
+            duration = read64(is);
         } else {
-            ui32(8*2 + 4*2, t >> 32);
-            ui32(8*2 + 4*2 + 4, t);
+            created = read32(is);
+            modified = read32(is);
+            track_id = read32(is);
+            read32(is); // 0
+            duration = read32(is);
         }
+        read64(is); // 0
+        layer = read16(is);
+        read16(is); //0
+        volume = read16(is);
+        read16(is); //0
+        for (auto &d : matrix) {
+            d = read32(is);
+        }
+        width = read32(is);
+        height = read32(is);
     }
-    void trackId(uint32_t id) {
-        if (version == 0) {
-            ui32(4*2, id);
+    virtual void write(std::ostream &os) const {
+        FullBox::write(os);
+        if (version == 1) {
+            write64(os, created);
+            write64(os, modified);
+            write32(os, track_id);
+            write32(os, 0);
+            write64(os, duration);
         } else {
-            ui32(8*2, id);
+            write32(os, created);
+            write32(os, modified);
+            write32(os, track_id);
+            write32(os, 0);
+            write32(os, duration);
         }
+        write64(os, 0);
+        write16(os, layer);
+        write16(os, 0);
+        write16(os, volume);
+        write16(os, 0);
+        for (auto &d : matrix) {
+            write32(os, d);
+        }
+        write32(os, width);
+        write32(os, height);
     }
 
-    virtual void dump_attr(std::ostream &os, const std::string &prefix) const {
-        os << prefix << " track: " << trackId() << std::endl;
-        os << prefix << " duration: " << duration() << std::endl;
-        os << prefix << " volume: " << volume() << std::endl;
-        os << prefix << " width: " << width()/65536 << std::endl;
-        os << prefix << " height: " << height()/65536 << std::endl;
-        os << prefix << " mat:[";
-        for (int i=0;i<9;i++) os << matrix(i) << ",";
-        os << "]" << std::endl;
+    virtual size_t calcSize() {
+        size = HEADER_SIZE + 17 * 4 + 3 * (version == 1 ? 8 : 4);
+        return size;
+    }
+
+    void dump_attr(std::ostream &os, const std::string &prefix) const {
+        FullBox::dump_attr(os,prefix);
+        os << prefix << " created: " << created << std::endl;
+        os << prefix << " modified: " << modified << std::endl;
+        os << prefix << " track_id: " << track_id << std::endl;
+        os << prefix << " duration: " << duration << std::endl;
+        os << prefix << " volume: " << volume << std::endl;
+        os << prefix << " width: " << width/0x10000 << std::endl;
+        os << prefix << " height: " << height/0x10000 << std::endl;
+        os << prefix << " matrix: [";
+        for (auto &d : matrix) {
+            os << d << ",";
+        }
+        os << std::endl;
     }
 };
 
 
-class BoxHDLR : public FullBufBox{
+class BoxHDLR : public FullBox{
 public:
-    BoxHDLR(size_t sz) : FullBufBox(BOX_HDLR, sz) {}
+    BoxHDLR(size_t sz) : FullBox(BOX_HDLR, sz) {}
 
+    char qt_type1[4];
+    char media_type[4];
+    char qt_type2[12];
+    std::string type_name;
+
+    void init() {
+        memset(qt_type1, 0, sizeof(qt_type1));
+        memset(media_type, 0, sizeof(media_type));
+        memset(qt_type2, 0, sizeof(qt_type2));
+        type_name = "";
+    }
 
     std::string typeAsString() const {
-        return std::string((char*)&buf[4],4);
+        return std::string(media_type, 4);
     }
     std::string name() const {
-        return std::string((char*)&buf[20],buf.size()-20);
+        return type_name;
     }
 
-    void name(const std::string &name) {
-        buf.resize(20 + name.size() + 1);
-        memcpy(&buf[20], name.c_str(), name.size()+1);
+    void parse(std::istream &is) {
+        FullBox::parse(is);
+        is.read(qt_type1, 4);
+        is.read(media_type, 4);
+        is.read(qt_type2, 12);
+        type_name.resize(size - HEADER_SIZE - 20 - 1);
+        is.read(&type_name[0], type_name.size());
+        read8(is);
     }
+
+    void write(std::ostream &os) const {
+        FullBox::write(os);
+        os.write(qt_type1, 4);
+        os.write(media_type, 4);
+        os.write(qt_type2, 12);
+        os.write(type_name.c_str(), type_name.size());
+        write8(os, 0);
+    }
+
+    size_t calcSize() {size = HEADER_SIZE + 20 + type_name.size() + 1; return size;}
 
     virtual void dump_attr(std::ostream &os, const std::string &prefix) const {
         os << prefix << " type: " << typeAsString() << std::endl;
-        os << prefix << " name: " << name() << std::endl;
+        os << prefix << " name: " << type_name << std::endl;
     }
 };
 
@@ -581,11 +690,11 @@ public:
 
     uint32_t sampleToChunk(int n) const {
         // n: [0..(numSample-1)]
-        uint32_t c = count();
         uint32_t ofs = 0;
         uint32_t ch = 1;
         uint32_t lch = 1;
         uint32_t lspc = 1;
+        uint32_t c = count();
         for (uint32_t i = 0; i<c; i++) {
             ofs += (first(i) - lch) * lspc;
             if (n < ofs) break;
@@ -601,7 +710,7 @@ public:
         os << prefix << " count: " << c << std::endl;
         int pos = 4;
         for (int i=0; i<c && i<10;i++) {
-            os << prefix << " stsc first_chunk:" << ui32(pos) <<  std::endl;
+            os << prefix << " stsc first_chunk:" << first(i) <<  std::endl;
             os << prefix << "     spc:" << ui32(pos+4) <<  std::endl;
             os << prefix << "     descidx:" << ui32(pos+8) <<  std::endl;
             pos += 12;
@@ -837,7 +946,7 @@ public:
     std::vector<uint32_t> data;
 
     BoxSIDX(size_t sz) : FullBox(BOX_SIDX, sz) {}
-    BoxSIDX() : FullBox(BOX_SIDX, 12+28), track_id(1), time_scale(1000),first_offset(0) {version = 1;}
+    BoxSIDX() : FullBox(BOX_SIDX, HEADER_SIZE+28), track_id(1), time_scale(1000),first_offset(0) {version = 1;}
 
     int count() const {return data.size()/3;}
     uint32_t duration(int n) const {return data[n*3+1];}
@@ -874,7 +983,7 @@ public:
         }
     }
 
-    size_t calcSize() {size = 12+28 + data.size()*sizeof(uint32_t); return size;}
+    size_t calcSize() {size = HEADER_SIZE+28 + data.size()*sizeof(uint32_t); return size;}
 
     virtual void dump_attr(std::ostream &os, const std::string &prefix) const {
         FullBox::dump_attr(os, prefix);
@@ -905,7 +1014,7 @@ public:
         write32(os, fragments);
     }
 
-    size_t calcSize() {size = 12 + 4; return size;}
+    size_t calcSize() {size = HEADER_SIZE + 4; return size;}
 
     void dump_attr(std::ostream &os, const std::string &prefix) const {
         FullBox::dump_attr(os, prefix);
@@ -936,7 +1045,7 @@ public:
 
     size_t calcSize() {
         version = 1; // always 64bit
-        size = 12 + 8;
+        size = HEADER_SIZE + 8;
         return size;
     }
 
@@ -959,7 +1068,7 @@ public:
     std::vector<uint32_t> data;
 
     BoxTRUN(size_t sz) : FullBox(BOX_TRUN, sz) {}
-    BoxTRUN() : FullBox(BOX_TRUN, 12+28) {}
+    BoxTRUN() : FullBox(BOX_TRUN, HEADER_SIZE+28) {}
 
     int count() const {return data.size()/fields();}
     uint32_t duration(int n) const {return data[n*3+1];}
@@ -993,7 +1102,7 @@ public:
         }
     }
 
-    size_t calcSize() {size = 12+8 + data.size()*sizeof(uint32_t); return size;}
+    size_t calcSize() {size = HEADER_SIZE+8 + data.size()*sizeof(uint32_t); return size;}
 
     virtual void dump_attr(std::ostream &os, const std::string &prefix) const {
         FullBox::dump_attr(os, prefix);
@@ -1053,7 +1162,7 @@ public:
     }
 
     size_t calcSize() {
-        size = 12 + 4;
+        size = HEADER_SIZE + 4;
         if (flags & FLAG_BASE_DATA_OFFSET) {
             size += 8;
         }
@@ -1117,28 +1226,22 @@ public:
             return new BoxSTSC(sz);
         }
         if (chktype(boxtype, BOX_STSD)) {
-            auto *b = new BoxSTSD(sz);
-            return b;
+            return new BoxSTSD(sz);
         }
         if (chktype(boxtype, BOX_STSS)) {
-            auto *b = new BoxSTSS(sz);
-            return b;
+            return new BoxSTSS(sz);
         }
         if (chktype(boxtype, BOX_STSZ)) {
-            auto *b = new BoxSTSZ(sz);
-            return b;
+            return new BoxSTSZ(sz);
         }
         if (chktype(boxtype, BOX_STCO)) {
-            auto *b = new BoxSTCO(sz);
-            return b;
+            return new BoxSTCO(sz);
         }
         if (chktype(boxtype, BOX_STTS)) {
-            auto *b = new BoxSTTS(sz);
-            return b;
+            return new BoxSTTS(sz);
         }
         if (chktype(boxtype, BOX_CTTS)) {
-            auto *b = new BoxCTTS(sz);
-            return b;
+            return new BoxCTTS(sz);
         }
 
         if (chktype(boxtype, BOX_STYP)) {
